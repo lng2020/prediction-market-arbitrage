@@ -1,0 +1,12 @@
+[
+  {
+    "_comment": "NBA Markets - Phase 1",
+    "_instructions": "Run 'python scripts/discover_nba.py' to find matching markets",
+    "event_name": "Example: Lakers vs Celtics",
+    "polymarket_token_id": "REPLACE_WITH_REAL_TOKEN_ID",
+    "kalshi_ticker": "REPLACE_WITH_REAL_TICKER",
+    "outcome": "YES",
+    "category": "nba",
+    "active": false
+  }
+]

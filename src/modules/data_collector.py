@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 
 class DataCollector:
     """
-    Collects real-time quotes from Polymarket and Kalshi.
+    Collects real-time quotes from Polymarket and Kalshi via WebSocket.
 
     Responsibilities:
     - A.1: API connection management
-    - A.2: Real-time quote fetching via WebSocket/polling
+    - A.2: Real-time quote fetching via WebSocket
     - A.3: Event/contract mapping maintenance
     """
 
@@ -96,33 +96,6 @@ class DataCollector:
                 callback(quote)
             except Exception as e:
                 logger.error(f"Error in quote callback: {e}")
-
-    async def fetch_quotes_polling(self) -> dict[str, Quote]:
-        """
-        Fetch quotes for all contract pairs via REST polling.
-
-        Returns dict mapping contract pair event_name to (pm_quote, kl_quote).
-        """
-        quotes = {}
-
-        for pair in self.get_contract_pairs():
-            try:
-                # Fetch both quotes concurrently
-                pm_task = self.polymarket.get_quote(pair.polymarket_token_id)
-                kl_task = self.kalshi.get_quote(pair.kalshi_ticker)
-
-                pm_quote, kl_quote = await asyncio.gather(pm_task, kl_task)
-
-                # Cache quotes
-                await self._handle_quote_update(pm_quote)
-                await self._handle_quote_update(kl_quote)
-
-                quotes[pair.event_name] = {"pm": pm_quote, "kl": kl_quote}
-
-            except Exception as e:
-                logger.error(f"Error fetching quotes for {pair.event_name}: {e}")
-
-        return quotes
 
     async def start_websocket_streams(self) -> None:
         """Start WebSocket connections for real-time quotes."""
@@ -200,20 +173,3 @@ class DataCollector:
 
         self._ws_tasks.clear()
         logger.info("DataCollector stopped")
-
-    async def run_polling_loop(self, interval_seconds: float = 1.0) -> None:
-        """
-        Run a polling loop to fetch quotes at regular intervals.
-
-        Use this as fallback when WebSocket is not available.
-        """
-        self._running = True
-        logger.info(f"Starting polling loop with {interval_seconds}s interval")
-
-        while self._running:
-            try:
-                await self.fetch_quotes_polling()
-            except Exception as e:
-                logger.error(f"Polling error: {e}")
-
-            await asyncio.sleep(interval_seconds)

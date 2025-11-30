@@ -3,12 +3,11 @@
 Kalshi/Polymarket Cross-Platform Arbitrage Bot
 
 Usage:
-    python main.py [--polling] [--interval SECONDS] [--dry-run]
+    python main.py [--dry-run] [--verbose]
 
 Options:
-    --polling       Use REST polling instead of WebSocket
-    --interval N    Polling interval in seconds (default: 1.0)
     --dry-run       Run in simulation mode without executing trades
+    --verbose       Enable debug logging
 """
 
 import argparse
@@ -81,14 +80,8 @@ async def run_bot(args: argparse.Namespace) -> None:
         logger.info(f"Bot status: {status}")
 
         # Run the bot
-        use_websocket = not args.polling
-        logger.info(
-            f"Starting bot (mode: {'WebSocket' if use_websocket else 'Polling'})"
-        )
-        await bot.run(
-            use_websocket=use_websocket,
-            polling_interval=args.interval,
-        )
+        logger.info("Starting bot (mode: WebSocket)")
+        await bot.run()
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
@@ -104,17 +97,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Kalshi/Polymarket Arbitrage Bot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--polling",
-        action="store_true",
-        help="Use REST polling instead of WebSocket",
-    )
-    parser.add_argument(
-        "--interval",
-        type=float,
-        default=1.0,
-        help="Polling interval in seconds (default: 1.0)",
     )
     parser.add_argument(
         "--dry-run",

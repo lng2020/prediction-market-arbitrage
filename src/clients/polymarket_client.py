@@ -5,12 +5,16 @@ import json
 from datetime import datetime
 from typing import Any, Callable, Optional
 
+import aiohttp
 import websockets
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import MarketOrderArgs, OpenOrderParams, OrderArgs, OrderType as PMOrderType
 
 from ..config import PolymarketConfig
 from ..models import Order, OrderStatus, OrderType, Platform, Quote, Side
+
+# Gamma API for market discovery
+GAMMA_API_URL = "https://gamma-api.polymarket.com"
 
 
 class PolymarketClient:
@@ -47,12 +51,167 @@ class PolymarketClient:
         if self._ws:
             await self._ws.close()
 
-    # Market Data Methods
+    # Market Data Methods (Gamma API)
 
-    async def get_markets(self) -> list[dict]:
-        """Get list of available markets."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._client.get_simplified_markets)
+    async def get_markets(
+        self,
+        tag: Optional[str] = None,
+        tag_id: Optional[int] = None,
+        closed: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """
+        Get list of markets from Gamma API.
+
+        Args:
+            tag: Filter by tag slug (e.g., "nba", "sports")
+            tag_id: Filter by tag ID
+            closed: Include closed markets
+            limit: Max results per page (max 100)
+            offset: Pagination offset
+        """
+        params = {
+            "closed": str(closed).lower(),
+            "limit": limit,
+            "offset": offset,
+        }
+        if tag:
+            params["tag"] = tag
+        if tag_id:
+            params["tag_id"] = tag_id
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{GAMMA_API_URL}/markets", params=params) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return []
+
+    async def get_events(
+        self,
+        tag: Optional[str] = None,
+        closed: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """
+        Get list of events from Gamma API.
+
+        Events contain multiple related markets.
+        """
+        params = {
+            "closed": str(closed).lower(),
+            "limit": limit,
+            "offset": offset,
+            "order": "id",
+            "ascending": "false",
+        }
+        if tag:
+            params["tag"] = tag
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{GAMMA_API_URL}/events", params=params) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return []
+
+    async def get_event_by_slug(self, slug: str) -> Optional[dict]:
+        """Get event by slug (e.g., 'nba-orl-det-2025-11-28')."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{GAMMA_API_URL}/events", params={"slug": slug}) as resp:
+                if resp.status == 200:
+                    events = await resp.json()
+                    return events[0] if events else None
+                return None
+
+    async def get_sports_tags(self) -> list[dict]:
+        """Get all sports tags and metadata."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{GAMMA_API_URL}/sports") as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return []
+
+    async def search_nba_games(self, date: Optional[str] = None) -> list[dict]:
+        """
+        Search for NBA game markets using fast event_date filter.
+
+        Args:
+            date: Optional date filter (YYYY-MM-DD format)
+
+        Returns:
+            List of NBA game events with their markets
+        """
+        events = []
+
+        if not date:
+            # If no date specified, use current date
+            date = datetime.now().strftime("%Y-%m-%d")
+
+        # Use event_date filter for fast querying
+        async with aiohttp.ClientSession() as session:
+            # Fetch all events for this date - they're paginated
+            for offset in range(0, 500, 100):  # Cap at 500 events
+                params = {
+                    "event_date": date,
+                    "limit": 100,
+                    "offset": offset,
+                    "active": "true",
+                    "closed": "false",
+                }
+
+                async with session.get(f"{GAMMA_API_URL}/events", params=params) as resp:
+                    if resp.status != 200:
+                        break
+                    batch = await resp.json()
+                    if not batch:
+                        break
+
+                    for event in batch:
+                        slug = event.get("slug", "")
+                        # NBA game slugs look like: nba-orl-det-2025-11-28
+                        if slug.startswith("nba-") and date in slug:
+                            events.append(event)
+
+                    if len(batch) < 100:
+                        break
+
+        return events
+
+    async def get_nba_game_by_teams(
+        self,
+        away_team: str,
+        home_team: str,
+        date: str
+    ) -> Optional[dict]:
+        """
+        Get NBA game event by team abbreviations and date.
+
+        This is the fastest method - constructs slug directly.
+
+        Args:
+            away_team: Away team abbreviation (e.g., 'orl', 'chi')
+            home_team: Home team abbreviation (e.g., 'det', 'bos')
+            date: Game date in YYYY-MM-DD format
+
+        Returns:
+            Event dict or None if not found
+        """
+        # Construct the slug directly (much faster than searching)
+        slug = f"nba-{away_team.lower()}-{home_team.lower()}-{date}"
+        return await self.get_event_by_slug(slug)
+
+    async def get_market_by_condition(self, condition_id: str) -> Optional[dict]:
+        """Get market by condition ID from Gamma API."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{GAMMA_API_URL}/markets",
+                params={"condition_id": condition_id}
+            ) as resp:
+                if resp.status == 200:
+                    markets = await resp.json()
+                    return markets[0] if markets else None
+                return None
 
     async def get_market(self, condition_id: str) -> dict:
         """Get single market details."""
@@ -85,14 +244,22 @@ class PolymarketClient:
             None, self._client.get_order_book, token_id
         )
 
-        # Parse orderbook - bids and asks are lists of [price, size]
-        bids = orderbook.get("bids", [])
-        asks = orderbook.get("asks", [])
+        # py-clob-client returns OrderBookSummary object, handle both dict and object
+        if hasattr(orderbook, "bids"):
+            bids = orderbook.bids or []
+            asks = orderbook.asks or []
+        else:
+            bids = orderbook.get("bids", [])
+            asks = orderbook.get("asks", [])
 
-        best_bid = float(bids[0]["price"]) if bids else 0.0
-        best_bid_size = float(bids[0]["size"]) if bids else 0.0
-        best_ask = float(asks[0]["price"]) if asks else 1.0
-        best_ask_size = float(asks[0]["size"]) if asks else 0.0
+        # Parse bids/asks - can be list of dicts or objects
+        def get_price_size(item):
+            if hasattr(item, "price"):
+                return float(item.price), float(item.size)
+            return float(item.get("price", 0)), float(item.get("size", 0))
+
+        best_bid, best_bid_size = get_price_size(bids[0]) if bids else (0.0, 0.0)
+        best_ask, best_ask_size = get_price_size(asks[0]) if asks else (1.0, 0.0)
 
         return Quote(
             platform=Platform.POLYMARKET,

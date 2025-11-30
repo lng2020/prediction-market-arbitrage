@@ -7,6 +7,7 @@ Coordinates all modules for the arbitrage trading system.
 import asyncio
 import logging
 import signal
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -55,6 +56,11 @@ class ArbitrageBot:
         self._total_profit = 0.0
         self._last_opportunity: Optional[ArbitrageOpportunity] = None
 
+        # Debouncing for WebSocket mode
+        self._last_analysis_time = 0.0
+        self._analysis_interval = 1.0  # Minimum seconds between analyses
+        self._analysis_lock = asyncio.Lock()
+
     async def initialize(self) -> None:
         """Initialize all clients and connections."""
         logger.info("Initializing arbitrage bot...")
@@ -97,29 +103,27 @@ class ArbitrageBot:
 
     async def run_once(self) -> Optional[TradeResult]:
         """
-        Run a single arbitrage cycle.
+        Run a single arbitrage cycle using cached WebSocket quotes.
 
-        1. Fetch quotes for all pairs
+        1. Get cached quotes for all pairs
         2. Find opportunities
         3. Execute best opportunity if found
 
         Returns TradeResult if a trade was executed, None otherwise.
         """
-        # Step 1: Fetch quotes
-        quotes = await self.data_collector.fetch_quotes_polling()
-
-        if not quotes:
-            return None
-
-        # Step 2: Prepare data for analysis
+        # Step 1: Get cached quotes from WebSocket updates
         pairs_data = {}
         for pair in self.data_collector.get_contract_pairs():
-            if pair.event_name in quotes:
+            pm_quote, kl_quote = self.data_collector.get_pair_quotes(pair)
+            if pm_quote and kl_quote:
                 pairs_data[pair.event_name] = {
-                    "pm": quotes[pair.event_name]["pm"],
-                    "kl": quotes[pair.event_name]["kl"],
+                    "pm": pm_quote,
+                    "kl": kl_quote,
                     "pair": pair,
                 }
+
+        if not pairs_data:
+            return None
 
         # Step 3: Find opportunities
         opportunities = self.arbitrage_finder.analyze_all_pairs(pairs_data)
@@ -154,18 +158,8 @@ class ArbitrageBot:
 
         return result
 
-    async def run(
-        self,
-        use_websocket: bool = True,
-        polling_interval: float = 1.0,
-    ) -> None:
-        """
-        Main event loop for the arbitrage bot.
-
-        Args:
-            use_websocket: Use WebSocket for real-time data (preferred)
-            polling_interval: Polling interval in seconds (fallback)
-        """
+    async def run(self) -> None:
+        """Main event loop for the arbitrage bot using WebSocket streams."""
         self._running = True
         logger.info("Starting arbitrage bot main loop")
 
@@ -175,27 +169,17 @@ class ArbitrageBot:
             loop.add_signal_handler(sig, lambda: asyncio.create_task(self.shutdown()))
 
         try:
-            if use_websocket:
-                # Start WebSocket streams
-                await self.data_collector.start_websocket_streams()
+            # Start WebSocket streams
+            await self.data_collector.start_websocket_streams()
 
-                # Register quote callback to trigger analysis
-                self.data_collector.on_quote_update(
-                    lambda q: asyncio.create_task(self._on_quote_update())
-                )
+            # Register quote callback to trigger analysis
+            self.data_collector.on_quote_update(
+                lambda q: asyncio.create_task(self._on_quote_update())
+            )
 
-                # Keep running until stopped
-                while self._running:
-                    await asyncio.sleep(1)
-            else:
-                # Polling mode
-                while self._running:
-                    try:
-                        await self.run_once()
-                    except Exception as e:
-                        logger.error(f"Error in main loop: {e}")
-
-                    await asyncio.sleep(polling_interval)
+            # Keep running until stopped
+            while self._running:
+                await asyncio.sleep(1)
 
         except asyncio.CancelledError:
             logger.info("Main loop cancelled")
@@ -208,12 +192,20 @@ class ArbitrageBot:
             return
 
         # Debounce - don't execute too frequently
-        # This is a simple implementation; production would use proper rate limiting
+        current_time = time.time()
+        if current_time - self._last_analysis_time < self._analysis_interval:
+            return  # Skip if too soon
 
-        try:
-            await self.run_once()
-        except Exception as e:
-            logger.error(f"Error processing quote update: {e}")
+        # Try to acquire lock (non-blocking)
+        if self._analysis_lock.locked():
+            return  # Skip if another analysis is in progress
+
+        async with self._analysis_lock:
+            self._last_analysis_time = time.time()
+            try:
+                await self.run_once()
+            except Exception as e:
+                logger.error(f"Error processing quote update: {e}")
 
     def get_status(self) -> dict:
         """Get current bot status."""
@@ -266,7 +258,7 @@ async def main():
     # ))
 
     # Run the bot
-    await bot.run(use_websocket=False, polling_interval=1.0)
+    await bot.run()
 
 
 if __name__ == "__main__":

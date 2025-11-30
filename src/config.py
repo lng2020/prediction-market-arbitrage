@@ -75,13 +75,21 @@ class MarketCategory:
     ALL_SPORTS = "all_sports"
     ALL_MARKETS = "all_markets"
 
-    # Kalshi series tickers by category
+    # Kalshi series tickers by category (futures/championship)
     KALSHI_SERIES = {
         NBA: ["KXNBA", "NBA"],
         NFL: ["KXNFL", "NFL"],
         MLB: ["KXMLB", "MLB"],
         NHL: ["KXNHL", "NHL"],
         SOCCER: ["KXSOCCER", "SOCCER"],
+    }
+
+    # Kalshi series tickers for daily game markets
+    KALSHI_GAME_SERIES = {
+        NBA: ["KXNBAGAME"],
+        NFL: ["KXNFLGAME"],
+        MLB: ["KXMLBGAME"],
+        NHL: ["KXNHLGAME"],
     }
 
     # Polymarket search terms by category
@@ -102,7 +110,7 @@ class TradingConfig:
         default_factory=lambda: float(os.getenv("MIN_PROFIT_TARGET", "0.003"))
     )
     capital_per_trade: float = field(
-        default_factory=lambda: float(os.getenv("CAPITAL_PER_TRADE", "100"))
+        default_factory=lambda: float(os.getenv("CAPITAL_PER_TRADE", "5"))
     )
     slippage_buffer: float = field(
         default_factory=lambda: float(os.getenv("SLIPPAGE_BUFFER", "0.005"))

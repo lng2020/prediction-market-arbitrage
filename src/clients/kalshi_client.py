@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -16,6 +17,45 @@ from ..config import KalshiConfig
 from ..models import Order, OrderStatus, OrderType, Platform, Quote, Side
 
 
+class RateLimiter:
+    """Centralized rate limiter for API requests."""
+
+    def __init__(self, max_requests: int = 15, window_seconds: float = 1.0):
+        """
+        Initialize rate limiter.
+
+        Args:
+            max_requests: Maximum requests allowed per window (default 15, leaving buffer below 20)
+            window_seconds: Time window in seconds
+        """
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._request_times: deque = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        """Wait until a request slot is available."""
+        async with self._lock:
+            now = time.time()
+
+            # Remove requests outside the window
+            while self._request_times and now - self._request_times[0] >= self.window_seconds:
+                self._request_times.popleft()
+
+            # If at capacity, wait until oldest request expires
+            if len(self._request_times) >= self.max_requests:
+                wait_time = self.window_seconds - (now - self._request_times[0])
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
+                    # Re-check after sleeping
+                    now = time.time()
+                    while self._request_times and now - self._request_times[0] >= self.window_seconds:
+                        self._request_times.popleft()
+
+            # Record this request
+            self._request_times.append(time.time())
+
+
 class KalshiClient:
     """Async client for Kalshi API."""
 
@@ -26,6 +66,8 @@ class KalshiClient:
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._ws_message_id = 0
         self._quote_callbacks: list[Callable[[Quote], None]] = []
+        # Centralized rate limiter: 15 req/sec (buffer below 20 read limit)
+        self._rate_limiter = RateLimiter(max_requests=15, window_seconds=1.0)
 
     async def initialize(self) -> None:
         """Initialize the client and load credentials."""
@@ -44,12 +86,14 @@ class KalshiClient:
 
     def _generate_signature(self, timestamp_ms: int, method: str, path: str) -> str:
         """Generate RSA-PSS signature for request authentication."""
-        message = f"{timestamp_ms}{method}{path}"
+        # Strip query parameters from path for signing
+        path_without_query = path.split("?")[0]
+        message = f"{timestamp_ms}{method}{path_without_query}"
         signature = self._private_key.sign(
             message.encode(),
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH,
+                salt_length=padding.PSS.DIGEST_LENGTH,  # Must be DIGEST_LENGTH, not MAX_LENGTH
             ),
             hashes.SHA256(),
         )
@@ -72,10 +116,18 @@ class KalshiClient:
         path: str,
         params: Optional[dict] = None,
         data: Optional[dict] = None,
+        auth_required: bool = True,
     ) -> dict[str, Any]:
-        """Make an authenticated REST API request."""
+        """Make a REST API request."""
+        # Apply rate limiting
+        await self._rate_limiter.acquire()
+
         url = f"{self.config.base_url}{path}"
-        headers = self._get_auth_headers(method, path)
+
+        if auth_required and self._private_key:
+            headers = self._get_auth_headers(method, path)
+        else:
+            headers = {"Content-Type": "application/json"}
 
         async with self._session.request(
             method, url, headers=headers, params=params, json=data
@@ -225,7 +277,16 @@ class KalshiClient:
             "KALSHI-ACCESS-SIGNATURE": signature,
         }
 
-        self._ws = await websockets.connect(self.config.ws_url, extra_headers=headers)
+        # websockets 11.0+ uses 'additional_headers', older versions use 'extra_headers'
+        try:
+            self._ws = await websockets.connect(
+                self.config.ws_url, additional_headers=headers
+            )
+        except TypeError:
+            # Fallback for older websockets versions
+            self._ws = await websockets.connect(
+                self.config.ws_url, extra_headers=headers
+            )
 
     async def subscribe_orderbook(self, tickers: list[str]) -> None:
         """Subscribe to orderbook updates for given tickers."""
@@ -253,6 +314,9 @@ class KalshiClient:
 
     async def listen_websocket(self) -> None:
         """Listen for WebSocket messages."""
+        last_fetch_time: dict[str, float] = {}
+        min_interval_per_ticker = 1.0  # Min 1 second between fetches per ticker
+
         async for message in self._ws:
             data = json.loads(message)
             msg_type = data.get("type")
@@ -261,9 +325,23 @@ class KalshiClient:
                 # Process orderbook update and notify callbacks
                 ticker = data.get("msg", {}).get("market_ticker")
                 if ticker:
-                    quote = await self.get_quote(ticker)
-                    for callback in self._quote_callbacks:
-                        callback(quote)
+                    current_time = time.time()
+
+                    # Per-ticker rate limit to avoid flooding queue
+                    if ticker in last_fetch_time:
+                        if current_time - last_fetch_time[ticker] < min_interval_per_ticker:
+                            continue  # Skip this update
+
+                    last_fetch_time[ticker] = current_time
+
+                    try:
+                        # Centralized rate limiter handles global throttling
+                        quote = await self.get_quote(ticker)
+                        for callback in self._quote_callbacks:
+                            callback(quote)
+                    except Exception as e:
+                        # Log but continue on error
+                        pass
 
     # Fee Calculation
 

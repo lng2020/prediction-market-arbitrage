@@ -88,7 +88,25 @@ class DataCollector:
     async def _handle_quote_update(self, quote: Quote) -> None:
         """Handle incoming quote update."""
         key = self._cache_key(quote.platform, quote.contract_id)
+        old_quote = self._quotes.get(key)
         self._quotes[key] = quote
+
+        # Log quote update in verbose mode (only if price changed)
+        if old_quote is None or old_quote.bid != quote.bid or old_quote.ask != quote.ask:
+            # Find the pair name for this quote
+            pair_name = quote.contract_id[:20]  # Default to truncated contract_id
+            for pair in self._contract_pairs:
+                if quote.platform == Platform.POLYMARKET and pair.polymarket_token_id == quote.contract_id:
+                    pair_name = f"{pair.event_name} - {pair.outcome}"
+                    break
+                elif quote.platform == Platform.KALSHI and pair.kalshi_ticker == quote.contract_id:
+                    pair_name = f"{pair.event_name} - {pair.outcome}"
+                    break
+
+            logger.debug(
+                f"[Quote] {quote.platform.value} | {pair_name} | "
+                f"bid={quote.bid:.3f} ask={quote.ask:.3f}"
+            )
 
         # Notify callbacks
         for callback in self._quote_callbacks:
@@ -132,6 +150,30 @@ class DataCollector:
                 logger.info(f"Started Kalshi WebSocket for {len(kl_tickers)} tickers")
             except Exception as e:
                 logger.error(f"Failed to start Kalshi WebSocket: {e}")
+
+        # Fetch initial quotes for all pairs (WebSocket only updates on changes)
+        await self._fetch_initial_quotes()
+
+    async def _fetch_initial_quotes(self) -> None:
+        """Fetch initial quotes for all pairs via REST API."""
+        logger.info("Fetching initial quotes for all pairs...")
+        success_count = 0
+
+        for pair in self.get_contract_pairs():
+            try:
+                # Fetch from both platforms
+                pm_quote = await self.polymarket.get_quote(pair.polymarket_token_id)
+                kl_quote = await self.kalshi.get_quote(pair.kalshi_ticker)
+
+                # Cache quotes
+                await self._handle_quote_update(pm_quote)
+                await self._handle_quote_update(kl_quote)
+                success_count += 1
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch initial quote for {pair.event_name}: {e}")
+
+        logger.info(f"Fetched initial quotes for {success_count}/{len(self.get_contract_pairs())} pairs")
 
     async def _run_pm_websocket(self) -> None:
         """Run Polymarket WebSocket listener."""

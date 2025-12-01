@@ -36,6 +36,8 @@ def setup_logging(verbose: bool = False) -> None:
     # Reduce noise from third-party libraries
     logging.getLogger("websockets").setLevel(logging.WARNING)
     logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
 async def run_bot(args: argparse.Namespace) -> None:

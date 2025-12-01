@@ -308,7 +308,29 @@ class ArbitrageFinder:
             if not all([pm_quote, kl_quote, pair]):
                 continue
 
+            # Calculate spread for logging
+            # Spread = 1 - (PM_ask + KL_no_cost) where KL_no_cost = 1 - KL_bid
+            pm_ask = pm_quote.ask
+            kl_no_cost = 1 - kl_quote.bid
+            total_cost = pm_ask + kl_no_cost
+            spread = 1 - total_cost  # Positive spread = potential profit
+
             opportunities = self.find_opportunities(pair, pm_quote, kl_quote)
+
+            # Log analysis in verbose mode
+            if opportunities:
+                logger.debug(
+                    f"[Analysis] {pair.event_name} - {pair.outcome} | "
+                    f"PM_ask={pm_ask:.3f} KL_no={kl_no_cost:.3f} | "
+                    f"Spread: {spread*100:+.1f}% | OPPORTUNITY"
+                )
+            else:
+                logger.debug(
+                    f"[Analysis] {pair.event_name} - {pair.outcome} | "
+                    f"PM_ask={pm_ask:.3f} KL_no={kl_no_cost:.3f} | "
+                    f"Spread: {spread*100:+.1f}%"
+                )
+
             all_opportunities.extend(opportunities)
 
         # Sort by profit rate descending

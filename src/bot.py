@@ -161,6 +161,7 @@ class ArbitrageBot:
     async def run(self) -> None:
         """Main event loop for the arbitrage bot using WebSocket streams."""
         self._running = True
+        self._analysis_count = 0
         logger.info("Starting arbitrage bot main loop")
 
         # Setup signal handlers for graceful shutdown
@@ -177,14 +178,37 @@ class ArbitrageBot:
                 lambda q: asyncio.create_task(self._on_quote_update())
             )
 
-            # Keep running until stopped
+            # Keep running with periodic status updates
+            heartbeat_interval = 30  # seconds
+            seconds_elapsed = 0
             while self._running:
                 await asyncio.sleep(1)
+                seconds_elapsed += 1
+
+                if seconds_elapsed >= heartbeat_interval:
+                    seconds_elapsed = 0
+                    self._log_heartbeat()
 
         except asyncio.CancelledError:
             logger.info("Main loop cancelled")
         finally:
             await self.shutdown()
+
+    def _log_heartbeat(self) -> None:
+        """Log periodic status update (verbose mode only)."""
+        # Count how many pairs have cached quotes
+        pairs_with_quotes = 0
+        for pair in self.data_collector.get_contract_pairs():
+            pm_quote, kl_quote = self.data_collector.get_pair_quotes(pair)
+            if pm_quote and kl_quote:
+                pairs_with_quotes += 1
+
+        total_pairs = len(self.data_collector.get_contract_pairs())
+        logger.debug(
+            f"[Heartbeat] Pairs: {pairs_with_quotes}/{total_pairs} | "
+            f"Analyses: {self._analysis_count} | "
+            f"Trades: {self._trade_count}"
+        )
 
     async def _on_quote_update(self) -> None:
         """Callback triggered on quote updates to check for opportunities."""
@@ -202,6 +226,7 @@ class ArbitrageBot:
 
         async with self._analysis_lock:
             self._last_analysis_time = time.time()
+            self._analysis_count += 1
             try:
                 await self.run_once()
             except Exception as e:

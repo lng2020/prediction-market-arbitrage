@@ -1,6 +1,6 @@
 [
   {
-    "event_name": "NBA: SAS vs MIN (2025-11-30)",
+    "event_name": "NBA: MIN vs SAS (2025-11-30)",
     "polymarket_token_id": "59090579715265166829857828144766042424575879379138762929638052080686151068169",
     "kalshi_ticker": "KXNBAGAME-25NOV30SASMIN-SAS",
     "outcome": "Spurs",
@@ -9,7 +9,7 @@
     "date": "2025-11-30"
   },
   {
-    "event_name": "NBA: SAS vs MIN (2025-11-30)",
+    "event_name": "NBA: MIN vs SAS (2025-11-30)",
     "polymarket_token_id": "78732392182891778043198828953101065304772897019764904559099786459737369784558",
     "kalshi_ticker": "KXNBAGAME-25NOV30SASMIN-MIN",
     "outcome": "Timberwolves",
@@ -67,24 +67,6 @@
     "polymarket_token_id": "99507299414403308465813665974091848398404566386267123704387467334137482650599",
     "kalshi_ticker": "KXNBAGAME-25NOV30BOSCLE-BOS",
     "outcome": "Celtics",
-    "category": "nba",
-    "active": true,
-    "date": "2025-11-30"
-  },
-  {
-    "event_name": "NBA: UTA vs HOU (2025-11-30)",
-    "polymarket_token_id": "32188351890227016790755270490972610381393868295813366665364415023945097085485",
-    "kalshi_ticker": "KXNBAGAME-25NOV30HOUUTA-UTA",
-    "outcome": "Jazz",
-    "category": "nba",
-    "active": true,
-    "date": "2025-11-30"
-  },
-  {
-    "event_name": "NBA: UTA vs HOU (2025-11-30)",
-    "polymarket_token_id": "13760926114140205438977900603237541446250643781555469895030887143353774256266",
-    "kalshi_ticker": "KXNBAGAME-25NOV30HOUUTA-HOU",
-    "outcome": "Rockets",
     "category": "nba",
     "active": true,
     "date": "2025-11-30"

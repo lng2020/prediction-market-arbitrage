@@ -184,9 +184,11 @@ class ArbitrageFinder:
         quantity = self.config.capital_per_trade / avg_price
 
         # Account for available liquidity
+        # Polymarket minimum order size is 5 contracts
+        min_order_size = 5
         max_quantity = min(pm_quote.ask_size, kl_quote.bid_size, quantity)
 
-        if max_quantity <= 0:
+        if max_quantity < min_order_size:
             return None
 
         analysis = self.calculate_net_cost_t2t(pm_quote, kl_quote, max_quantity)
@@ -232,9 +234,11 @@ class ArbitrageFinder:
         quantity = self.config.capital_per_trade / avg_price
 
         # Account for liquidity (for maker, we care about the opposite side)
+        # Polymarket minimum order size is 5 contracts
+        min_order_size = 5
         max_quantity = min(kl_quote.bid_size, quantity)
 
-        if max_quantity <= 0:
+        if max_quantity < min_order_size:
             return None
 
         analysis = self.calculate_net_cost_m2t(

@@ -164,18 +164,18 @@ class KalshiClient:
         """Get current quote for a market."""
         orderbook = await self.get_orderbook(ticker)
 
-        # Kalshi returns prices in cents, convert to 0-1
+        # Kalshi returns prices in cents sorted ascending, convert to 0-1
         yes_bids = orderbook.get("yes", [])
         no_bids = orderbook.get("no", [])
 
-        # Best bid for YES = highest yes bid
+        # Best bid for YES = highest yes bid (last element, sorted ascending)
         # Best ask for YES = 100 - highest no bid (reciprocal relationship)
-        best_yes_bid = yes_bids[0][0] / 100 if yes_bids else 0.0
-        best_yes_bid_size = yes_bids[0][1] if yes_bids else 0.0
+        best_yes_bid = yes_bids[-1][0] / 100 if yes_bids else 0.0
+        best_yes_bid_size = yes_bids[-1][1] if yes_bids else 0.0
 
-        best_no_bid = no_bids[0][0] / 100 if no_bids else 0.0
+        best_no_bid = no_bids[-1][0] / 100 if no_bids else 0.0
         best_yes_ask = 1 - best_no_bid if no_bids else 1.0
-        best_yes_ask_size = no_bids[0][1] if no_bids else 0.0
+        best_yes_ask_size = no_bids[-1][1] if no_bids else 0.0
 
         return Quote(
             platform=Platform.KALSHI,

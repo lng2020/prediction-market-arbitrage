@@ -1,6 +1,6 @@
 [
   {
-    "event_name": "NBA: MIN vs SAS (2025-11-30)",
+    "event_name": "NBA: SAS vs MIN (2025-11-30)",
     "polymarket_token_id": "59090579715265166829857828144766042424575879379138762929638052080686151068169",
     "kalshi_ticker": "KXNBAGAME-25NOV30SASMIN-SAS",
     "outcome": "Spurs",
@@ -9,7 +9,7 @@
     "date": "2025-11-30"
   },
   {
-    "event_name": "NBA: MIN vs SAS (2025-11-30)",
+    "event_name": "NBA: SAS vs MIN (2025-11-30)",
     "polymarket_token_id": "78732392182891778043198828953101065304772897019764904559099786459737369784558",
     "kalshi_ticker": "KXNBAGAME-25NOV30SASMIN-MIN",
     "outcome": "Timberwolves",
@@ -18,7 +18,7 @@
     "date": "2025-11-30"
   },
   {
-    "event_name": "NBA: PHI vs ATL (2025-11-30)",
+    "event_name": "NBA: ATL vs PHI (2025-11-30)",
     "polymarket_token_id": "45508234108406942041862800919077508877178016720338256110757309834115824206835",
     "kalshi_ticker": "KXNBAGAME-25NOV30ATLPHI-PHI",
     "outcome": "76ers",
@@ -27,46 +27,10 @@
     "date": "2025-11-30"
   },
   {
-    "event_name": "NBA: PHI vs ATL (2025-11-30)",
+    "event_name": "NBA: ATL vs PHI (2025-11-30)",
     "polymarket_token_id": "109848432693305912458952847189186944947939972932653884564417539866412580905962",
     "kalshi_ticker": "KXNBAGAME-25NOV30ATLPHI-ATL",
     "outcome": "Hawks",
-    "category": "nba",
-    "active": true,
-    "date": "2025-11-30"
-  },
-  {
-    "event_name": "NBA: NYK vs TOR (2025-11-30)",
-    "polymarket_token_id": "95955431279810409290027286580756408149040274826880962652820762483325456572794",
-    "kalshi_ticker": "KXNBAGAME-25NOV30TORNYK-TOR",
-    "outcome": "Raptors",
-    "category": "nba",
-    "active": true,
-    "date": "2025-11-30"
-  },
-  {
-    "event_name": "NBA: NYK vs TOR (2025-11-30)",
-    "polymarket_token_id": "95357617539662553851770258163188638030215882964175041273306146412155742253938",
-    "kalshi_ticker": "KXNBAGAME-25NOV30TORNYK-NYK",
-    "outcome": "Knicks",
-    "category": "nba",
-    "active": true,
-    "date": "2025-11-30"
-  },
-  {
-    "event_name": "NBA: CLE vs BOS (2025-11-30)",
-    "polymarket_token_id": "85198411409507733228922921290143319932637644480021094486112162449478227764711",
-    "kalshi_ticker": "KXNBAGAME-25NOV30BOSCLE-CLE",
-    "outcome": "Cavaliers",
-    "category": "nba",
-    "active": true,
-    "date": "2025-11-30"
-  },
-  {
-    "event_name": "NBA: CLE vs BOS (2025-11-30)",
-    "polymarket_token_id": "99507299414403308465813665974091848398404566386267123704387467334137482650599",
-    "kalshi_ticker": "KXNBAGAME-25NOV30BOSCLE-BOS",
-    "outcome": "Celtics",
     "category": "nba",
     "active": true,
     "date": "2025-11-30"

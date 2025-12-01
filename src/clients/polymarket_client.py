@@ -258,8 +258,9 @@ class PolymarketClient:
                 return float(item.price), float(item.size)
             return float(item.get("price", 0)), float(item.get("size", 0))
 
-        best_bid, best_bid_size = get_price_size(bids[0]) if bids else (0.0, 0.0)
-        best_ask, best_ask_size = get_price_size(asks[0]) if asks else (1.0, 0.0)
+        # Polymarket returns bids ascending, asks descending - best prices are at the end
+        best_bid, best_bid_size = get_price_size(bids[-1]) if bids else (0.0, 0.0)
+        best_ask, best_ask_size = get_price_size(asks[-1]) if asks else (1.0, 0.0)
 
         return Quote(
             platform=Platform.POLYMARKET,
@@ -423,16 +424,36 @@ class PolymarketClient:
         async for message in self._ws:
             data = json.loads(message)
 
-            # Handle different message types
-            if "asset_id" in data:
-                # Quote update
+            # Handle price_changes messages (incremental updates with best_bid/best_ask)
+            if "price_changes" in data:
+                for change in data["price_changes"]:
+                    if "asset_id" in change and "best_bid" in change and "best_ask" in change:
+                        quote = Quote(
+                            platform=Platform.POLYMARKET,
+                            contract_id=change["asset_id"],
+                            bid=float(change["best_bid"]),
+                            ask=float(change["best_ask"]),
+                            bid_size=0.0,  # Not provided in price_changes
+                            ask_size=0.0,
+                        )
+                        for callback in self._quote_callbacks:
+                            callback(quote)
+            # Handle initial snapshot messages (full orderbook with bids/asks arrays)
+            elif "asset_id" in data and "bids" in data and "asks" in data:
+                bids = data.get("bids", [])
+                asks = data.get("asks", [])
+                # Polymarket returns bids ascending, asks descending - best prices at end
+                best_bid = float(bids[-1]["price"]) if bids else 0.0
+                best_ask = float(asks[-1]["price"]) if asks else 1.0
+                best_bid_size = float(bids[-1]["size"]) if bids else 0.0
+                best_ask_size = float(asks[-1]["size"]) if asks else 0.0
                 quote = Quote(
                     platform=Platform.POLYMARKET,
                     contract_id=data["asset_id"],
-                    bid=float(data.get("best_bid", 0)),
-                    ask=float(data.get("best_ask", 1)),
-                    bid_size=float(data.get("best_bid_size", 0)),
-                    ask_size=float(data.get("best_ask_size", 0)),
+                    bid=best_bid,
+                    ask=best_ask,
+                    bid_size=best_bid_size,
+                    ask_size=best_ask_size,
                 )
                 for callback in self._quote_callbacks:
                     callback(quote)

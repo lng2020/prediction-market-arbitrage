@@ -38,8 +38,8 @@ NBA_TEAMS = {
     "GSW": ["warriors", "golden state", "gsw", "gs"],
     "HOU": ["rockets", "houston", "hou"],
     "IND": ["pacers", "indiana", "ind"],
-    "LAC": ["clippers", "la clippers", "lac"],
-    "LAL": ["lakers", "la lakers", "los angeles lakers", "lal"],
+    "LAC": ["clippers", "la clippers", "lac", "los angeles c", "la c"],
+    "LAL": ["lakers", "la lakers", "los angeles lakers", "lal", "los angeles l", "la l"],
     "MEM": ["grizzlies", "memphis", "mem"],
     "MIA": ["heat", "miami", "mia"],
     "MIL": ["bucks", "milwaukee", "mil"],
@@ -66,13 +66,17 @@ for abbrev, names in NBA_TEAMS.items():
 
 
 def extract_teams_from_text(text: str) -> list[str]:
-    """Extract NBA team abbreviations from text."""
+    """Extract NBA team abbreviations from text using word boundary matching."""
     text_lower = text.lower()
     found_teams = set()
 
     for abbrev, names in NBA_TEAMS.items():
         for name in names:
-            if name.lower() in text_lower:
+            name_lower = name.lower()
+            # Use word boundary matching to avoid false positives
+            # e.g., "phi" shouldn't match "Memphis", "sa" shouldn't match "Sacramento"
+            pattern = r'\b' + re.escape(name_lower) + r'\b'
+            if re.search(pattern, text_lower):
                 found_teams.add(abbrev)
                 break
 

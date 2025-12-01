@@ -339,7 +339,7 @@ class TradeExecutor:
         self,
         order: Order,
         timeout: float,
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.1,  # Reduced from 0.5s for faster fill detection
     ) -> bool:
         """
         Wait for an order to fill.
@@ -401,6 +401,7 @@ class TradeExecutor:
         Emergency panic sell on Kalshi.
 
         Executes market sell to close position immediately.
+        Uses urgent priority to skip rate limiter queue.
         """
         logger.warning(f"PANIC SELL on KL: {order.contract_id}")
 
@@ -412,6 +413,7 @@ class TradeExecutor:
                 count=int(order.filled_quantity),
                 price_cents=1,  # Market sell - very low price
                 order_type=OrderType.MARKET,
+                urgent=True,  # Skip rate limiter queue for emergency sells
             )
             logger.info(f"Panic sell executed: {sell_order.order_id}")
         except Exception as e:

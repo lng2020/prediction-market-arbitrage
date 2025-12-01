@@ -155,25 +155,47 @@ class DataCollector:
         await self._fetch_initial_quotes()
 
     async def _fetch_initial_quotes(self) -> None:
-        """Fetch initial quotes for all pairs via REST API."""
+        """Fetch initial quotes for all pairs via REST API (parallelized)."""
         logger.info("Fetching initial quotes for all pairs...")
-        success_count = 0
+        pairs = self.get_contract_pairs()
 
-        for pair in self.get_contract_pairs():
+        if not pairs:
+            return
+
+        async def fetch_pair_quotes(pair: ContractPair) -> tuple[ContractPair, Optional[Quote], Optional[Quote]]:
+            """Fetch quotes for a single pair from both platforms."""
+            pm_quote = None
+            kl_quote = None
             try:
-                # Fetch from both platforms
                 pm_quote = await self.polymarket.get_quote(pair.polymarket_token_id)
+            except Exception as e:
+                logger.warning(f"Failed to fetch PM quote for {pair.event_name}: {e}")
+            try:
                 kl_quote = await self.kalshi.get_quote(pair.kalshi_ticker)
+            except Exception as e:
+                logger.warning(f"Failed to fetch KL quote for {pair.event_name}: {e}")
+            return (pair, pm_quote, kl_quote)
 
-                # Cache quotes
+        # Fetch all pairs in parallel
+        results = await asyncio.gather(
+            *[fetch_pair_quotes(pair) for pair in pairs],
+            return_exceptions=True
+        )
+
+        success_count = 0
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to fetch initial quote: {result}")
+                continue
+            pair, pm_quote, kl_quote = result
+            if pm_quote:
                 await self._handle_quote_update(pm_quote)
+            if kl_quote:
                 await self._handle_quote_update(kl_quote)
+            if pm_quote and kl_quote:
                 success_count += 1
 
-            except Exception as e:
-                logger.warning(f"Failed to fetch initial quote for {pair.event_name}: {e}")
-
-        logger.info(f"Fetched initial quotes for {success_count}/{len(self.get_contract_pairs())} pairs")
+        logger.info(f"Fetched initial quotes for {success_count}/{len(pairs)} pairs")
 
     async def _run_pm_websocket(self) -> None:
         """Run Polymarket WebSocket listener."""

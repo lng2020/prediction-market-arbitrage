@@ -58,7 +58,7 @@ class ArbitrageBot:
 
         # Debouncing for WebSocket mode
         self._last_analysis_time = 0.0
-        self._analysis_interval = 1.0  # Minimum seconds between analyses
+        self._analysis_interval = 0.2  # Reduced from 1.0s to catch more opportunities
         self._analysis_lock = asyncio.Lock()
 
     async def initialize(self) -> None:

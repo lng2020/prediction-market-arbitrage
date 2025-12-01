@@ -115,7 +115,7 @@ class TradingConfig:
     slippage_buffer: float = field(
         default_factory=lambda: float(os.getenv("SLIPPAGE_BUFFER", "0.005"))
     )
-    maker_timeout_seconds: float = 30.0
+    maker_timeout_seconds: float = 2.0  # Reduced from 30s - arbitrage windows close fast
     max_retries: int = 3
 
     # Market categories to trade (start with NBA only)

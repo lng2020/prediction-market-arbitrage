@@ -18,7 +18,11 @@ from ..models import Order, OrderStatus, OrderType, Platform, Quote, Side
 
 
 class RateLimiter:
-    """Centralized rate limiter for API requests."""
+    """Centralized rate limiter with priority support for API requests."""
+
+    # Priority levels (lower = higher priority)
+    PRIORITY_URGENT = 0  # Panic sells - skip queue
+    PRIORITY_NORMAL = 1  # Regular operations
 
     def __init__(self, max_requests: int = 15, window_seconds: float = 1.0):
         """
@@ -32,28 +36,54 @@ class RateLimiter:
         self.window_seconds = window_seconds
         self._request_times: deque = deque()
         self._lock = asyncio.Lock()
+        self._waiting_normal: int = 0  # Count of normal priority requests waiting
+        self._urgent_event = asyncio.Event()
+        self._urgent_event.set()  # Initially allow all
 
-    async def acquire(self) -> None:
-        """Wait until a request slot is available."""
+    async def acquire(self, priority: int = PRIORITY_NORMAL) -> None:
+        """
+        Wait until a request slot is available.
+
+        Args:
+            priority: Request priority (PRIORITY_URGENT for panic sells)
+        """
+        # Urgent requests skip the normal queue
+        if priority == self.PRIORITY_NORMAL:
+            self._waiting_normal += 1
+            try:
+                # Wait if urgent requests are being processed
+                await self._urgent_event.wait()
+            finally:
+                self._waiting_normal -= 1
+
         async with self._lock:
-            now = time.time()
+            # For urgent requests, signal normal requests to pause
+            if priority == self.PRIORITY_URGENT:
+                self._urgent_event.clear()
 
-            # Remove requests outside the window
-            while self._request_times and now - self._request_times[0] >= self.window_seconds:
-                self._request_times.popleft()
+            try:
+                now = time.time()
 
-            # If at capacity, wait until oldest request expires
-            if len(self._request_times) >= self.max_requests:
-                wait_time = self.window_seconds - (now - self._request_times[0])
-                if wait_time > 0:
-                    await asyncio.sleep(wait_time)
-                    # Re-check after sleeping
-                    now = time.time()
-                    while self._request_times and now - self._request_times[0] >= self.window_seconds:
-                        self._request_times.popleft()
+                # Remove requests outside the window
+                while self._request_times and now - self._request_times[0] >= self.window_seconds:
+                    self._request_times.popleft()
 
-            # Record this request
-            self._request_times.append(time.time())
+                # If at capacity, wait until oldest request expires
+                if len(self._request_times) >= self.max_requests:
+                    wait_time = self.window_seconds - (now - self._request_times[0])
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                        # Re-check after sleeping
+                        now = time.time()
+                        while self._request_times and now - self._request_times[0] >= self.window_seconds:
+                            self._request_times.popleft()
+
+                # Record this request
+                self._request_times.append(time.time())
+            finally:
+                # Release normal requests to continue
+                if priority == self.PRIORITY_URGENT:
+                    self._urgent_event.set()
 
 
 class KalshiClient:
@@ -117,10 +147,11 @@ class KalshiClient:
         params: Optional[dict] = None,
         data: Optional[dict] = None,
         auth_required: bool = True,
+        priority: int = RateLimiter.PRIORITY_NORMAL,
     ) -> dict[str, Any]:
         """Make a REST API request."""
-        # Apply rate limiting
-        await self._rate_limiter.acquire()
+        # Apply rate limiting with priority
+        await self._rate_limiter.acquire(priority)
 
         url = f"{self.config.base_url}{path}"
 
@@ -209,6 +240,7 @@ class KalshiClient:
         price_cents: int,
         order_type: OrderType = OrderType.LIMIT,
         client_order_id: Optional[str] = None,
+        urgent: bool = False,
     ) -> Order:
         """Create a new order."""
         data = {
@@ -225,7 +257,8 @@ class KalshiClient:
         if client_order_id:
             data["client_order_id"] = client_order_id
 
-        result = await self._request("POST", "/portfolio/orders", data=data)
+        priority = RateLimiter.PRIORITY_URGENT if urgent else RateLimiter.PRIORITY_NORMAL
+        result = await self._request("POST", "/portfolio/orders", data=data, priority=priority)
         order_data = result.get("order", {})
 
         return Order(

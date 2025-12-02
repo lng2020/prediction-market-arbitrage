@@ -72,6 +72,7 @@ class MarketCategory:
     MLB = "mlb"
     NHL = "nhl"
     SOCCER = "soccer"
+    CS2 = "cs2"
     ALL_SPORTS = "all_sports"
     ALL_MARKETS = "all_markets"
 
@@ -82,6 +83,7 @@ class MarketCategory:
         MLB: ["KXMLB", "MLB"],
         NHL: ["KXNHL", "NHL"],
         SOCCER: ["KXSOCCER", "SOCCER"],
+        CS2: ["KXCSGOGAME"],
     }
 
     # Kalshi series tickers for daily game markets
@@ -90,6 +92,7 @@ class MarketCategory:
         NFL: ["KXNFLGAME"],
         MLB: ["KXMLBGAME"],
         NHL: ["KXNHLGAME"],
+        CS2: ["KXCSGOGAME"],
     }
 
     # Polymarket search terms by category
@@ -99,6 +102,7 @@ class MarketCategory:
         MLB: ["mlb", "baseball"],
         NHL: ["nhl", "hockey"],
         SOCCER: ["soccer", "football", "premier league", "mls"],
+        CS2: ["cs2", "counter-strike", "csgo", "counter strike"],
     }
 
 
@@ -107,7 +111,7 @@ class TradingConfig:
     """Trading parameters configuration."""
 
     min_profit_target: float = field(
-        default_factory=lambda: float(os.getenv("MIN_PROFIT_TARGET", "0.003"))
+        default_factory=lambda: float(os.getenv("MIN_PROFIT_TARGET", "0.002"))
     )
     capital_per_trade: float = field(
         default_factory=lambda: float(os.getenv("CAPITAL_PER_TRADE", "5"))
@@ -115,10 +119,16 @@ class TradingConfig:
     slippage_buffer: float = field(
         default_factory=lambda: float(os.getenv("SLIPPAGE_BUFFER", "0.005"))
     )
-    maker_timeout_seconds: float = 2.0  # Reduced from 30s - arbitrage windows close fast
+    maker_timeout_seconds: float = 30.0  # Give maker orders time to fill
     max_retries: int = 3
+    min_spread_threshold: float = 0.005  # Only trade when spread >= 0.5% (real edge)
+    # Maker price aggressiveness: 0.0 = at bid (conservative), 1.0 = at ask (aggressive)
+    # 0.5 = midpoint between bid and ask
+    maker_aggressiveness: float = field(
+        default_factory=lambda: float(os.getenv("MAKER_AGGRESSIVENESS", "0.7"))
+    )
 
-    # Market categories to trade (start with NBA only)
+    # Market categories to trade (NBA only - CS2 has low liquidity)
     enabled_categories: list[str] = field(
         default_factory=lambda: os.getenv(
             "ENABLED_CATEGORIES", MarketCategory.NBA

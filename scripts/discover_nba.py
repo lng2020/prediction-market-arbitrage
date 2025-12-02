@@ -249,16 +249,16 @@ def extract_pm_tokens(pm: dict, game_winner_only: bool = False) -> list[dict]:
 
     Args:
         pm: Polymarket event dict
-        game_winner_only: If True, only extract tokens from the first game winner market
+        game_winner_only: If True, only extract tokens from the moneyline market
                          (excludes over/under, spread, and prop markets)
     """
     markets = pm.get("markets", [])
     tokens = []
-    game_winner_found = False
 
     for market in markets:
         clob_token_ids = market.get("clobTokenIds", [])
         outcomes = market.get("outcomes", [])
+        question = market.get("question", "").lower()
 
         # Parse JSON strings if needed (Gamma API sometimes returns these as strings)
         if isinstance(clob_token_ids, str):
@@ -273,27 +273,30 @@ def extract_pm_tokens(pm: dict, game_winner_only: bool = False) -> list[dict]:
             except (json.JSONDecodeError, ValueError):
                 outcomes = []
 
-        # Skip non-game-winner markets if requested
-        if game_winner_only and outcomes:
-            # Over/Under and spread markets have specific outcome patterns
+        # Skip non-moneyline markets if requested
+        if game_winner_only:
+            # Check question/title for spread, over/under, half-time markers
+            is_spread = "spread" in question
+            is_over_under = "o/u" in question or "over" in question or "under" in question
+            is_half = "1h " in question or "1h:" in question or "half" in question
+
+            # Also check outcomes for over/under
             outcome_lower = [o.lower() for o in outcomes]
-            is_over_under = any("over" in o or "under" in o for o in outcome_lower)
-            is_spread = any("+" in o or "-" in o for o in outcomes)
-            if is_over_under or is_spread:
+            has_ou_outcomes = any("over" in o or "under" in o for o in outcome_lower)
+
+            if is_spread or is_over_under or is_half or has_ou_outcomes:
                 continue
 
-            # Only take the first game winner market
-            if game_winner_found:
-                continue
-            game_winner_found = True
+            # This should be a moneyline market - extract and return immediately
+            if clob_token_ids and outcomes:
+                for i, outcome in enumerate(outcomes):
+                    if i < len(clob_token_ids):
+                        tokens.append({
+                            "outcome": outcome,
+                            "token_id": clob_token_ids[i],
+                        })
+                return tokens  # Return first moneyline found
 
-        if clob_token_ids and outcomes:
-            for i, outcome in enumerate(outcomes):
-                if i < len(clob_token_ids):
-                    tokens.append({
-                        "outcome": outcome,
-                        "token_id": clob_token_ids[i],
-                    })
     return tokens
 
 
@@ -498,10 +501,14 @@ async def main(args: argparse.Namespace) -> None:
     if args.save and matches:
         contracts_file = Path("contracts.json")
 
-        # Override by default (start fresh)
-        existing = []
+        # Load existing contracts to preserve other categories
+        existing_data = {}
+        if contracts_file.exists():
+            with open(contracts_file) as f:
+                existing_data = json.load(f)
 
-        # Add new matches
+        # Build new NBA entries
+        nba_entries = []
         added = 0
         for match in matches:
             teams = match["teams"]
@@ -554,7 +561,6 @@ async def main(args: argparse.Namespace) -> None:
                 "polymarket_token_id": matching_token["token_id"],
                 "kalshi_ticker": kalshi_ticker,
                 "outcome": matching_token["outcome"],
-                "category": "nba",
                 "active": True,
                 "date": target_date,
             }
@@ -563,20 +569,20 @@ async def main(args: argparse.Namespace) -> None:
             is_duplicate = any(
                 e.get("kalshi_ticker") == kalshi_ticker and
                 e.get("polymarket_token_id") == matching_token["token_id"]
-                for e in existing
+                for e in nba_entries
             )
 
             if not is_duplicate:
-                existing.append(entry)
+                nba_entries.append(entry)
                 added += 1
 
-        # Remove example/placeholder entries
-        existing = [e for e in existing if not e.get("polymarket_token_id", "").startswith("REPLACE")]
+        # Update only the nba category, preserve others
+        existing_data["nba"] = nba_entries
 
         with open(contracts_file, "w") as f:
-            json.dump(existing, f, indent=2)
+            json.dump(existing_data, f, indent=2)
 
-        print(f"\n  ✓ Added {added} contract pairs to contracts.json")
+        print(f"\n  ✓ Added {added} contract pairs to contracts.json (nba category)")
 
     # Cleanup
     await kalshi.close()

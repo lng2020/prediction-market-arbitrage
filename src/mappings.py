@@ -43,16 +43,12 @@ def load_mappings_from_file(
                    If None, loads all mappings
 
     Expected format:
-    [
-        {
-            "event_name": "Event Name",
-            "polymarket_token_id": "0x...",
-            "kalshi_ticker": "TICKER",
-            "outcome": "YES",
-            "category": "nba",
-            "active": true
-        }
-    ]
+    {
+        "nba": [
+            {"event_name": "...", "polymarket_token_id": "...", ...}
+        ],
+        "cs2": [...]
+    }
     """
     path = Path(file_path)
     if not path.exists():
@@ -64,27 +60,21 @@ def load_mappings_from_file(
             data = json.load(f)
 
         mappings = []
-        for item in data:
-            # Skip comment/instruction entries
-            if item.get("_comment") or item.get("_instructions"):
-                if "event_name" not in item:
-                    continue
+        categories_lower = [c.lower() for c in categories] if categories else None
 
-            # Filter by category if specified
-            item_category = item.get("category", "").lower()
-            if categories:
-                categories_lower = [c.lower() for c in categories]
-                if item_category and item_category not in categories_lower:
-                    continue
+        for category, items in data.items():
+            if categories_lower and category.lower() not in categories_lower:
+                continue
 
-            pair = ContractPair(
-                event_name=item["event_name"],
-                polymarket_token_id=item["polymarket_token_id"],
-                kalshi_ticker=item["kalshi_ticker"],
-                outcome=item.get("outcome", "YES"),
-                active=item.get("active", True),
-            )
-            mappings.append(pair)
+            for item in items:
+                pair = ContractPair(
+                    event_name=item["event_name"],
+                    polymarket_token_id=item["polymarket_token_id"],
+                    kalshi_ticker=item["kalshi_ticker"],
+                    outcome=item.get("outcome", "YES"),
+                    active=item.get("active", True),
+                )
+                mappings.append(pair)
 
         logger.info(
             f"Loaded {len(mappings)} contract mappings from {file_path}"

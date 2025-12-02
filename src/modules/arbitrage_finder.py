@@ -59,31 +59,25 @@ class ArbitrageFinder:
 
         Both orders are market/taker orders executed at ask prices.
 
-        Strategy: Buy YES on PM at ask, Buy NO on KL at ask
-        (or equivalently, the reciprocal positions)
+        Strategy: Buy YES on PM at ask, Buy NO on KL (by selling YES at bid)
         """
-        # Use ask prices for taker orders
-        pm_price = pm_quote.ask
-        kl_price = kl_quote.ask
+        # Per-contract prices
+        pm_price = pm_quote.ask  # Cost to buy YES on PM
+        kl_no_price = 1 - kl_quote.bid  # Cost to get NO position on KL (sell YES at bid)
 
-        # Calculate fees
-        pm_fee = PolymarketClient.calculate_taker_fee(quantity * pm_price)
-        kl_fee = KalshiClient.calculate_taker_fee(int(quantity), kl_price)
+        # Calculate total fees
+        pm_fee_total = PolymarketClient.calculate_taker_fee(quantity * pm_price)
+        # Kalshi fee when selling YES at bid price
+        kl_fee_total = KalshiClient.calculate_taker_fee(int(quantity), kl_quote.bid)
 
-        # Total cost = PM ask + KL ask + fees
-        # For binary outcomes where PM_YES + KL_NO should = 1
-        # We buy PM_YES and KL_NO (which costs 1 - KL_YES_bid)
-        # Simplified: total cost = pm_ask + (1 - kl_bid)
-        # But since we're comparing same event: total_cost = pm_ask + kl_ask
+        # Convert fees to per-contract for consistent calculation
+        pm_fee_per_contract = pm_fee_total / quantity if quantity > 0 else 0
+        kl_fee_per_contract = kl_fee_total / quantity if quantity > 0 else 0
 
-        # Actually for arbitrage:
-        # If PM has YES token and KL has YES contract for same outcome:
-        # Buy YES on platform with lower ask
-        # Or buy complementary positions if sum < 1
+        # Total cost per contract
+        total_cost = pm_price + kl_no_price + pm_fee_per_contract + kl_fee_per_contract
 
-        total_cost = pm_price + (1 - kl_quote.bid) + pm_fee + kl_fee
-
-        # Guaranteed payout: One of the positions pays $1
+        # Guaranteed payout: One of the positions pays $1 per contract
         guaranteed_payout = 1.0
 
         net_profit = guaranteed_payout - total_cost
@@ -91,9 +85,9 @@ class ArbitrageFinder:
 
         return CostAnalysis(
             pm_price=pm_price,
-            kl_price=1 - kl_quote.bid,  # Cost to buy NO on Kalshi
-            pm_fee=pm_fee,
-            kl_fee=kl_fee,
+            kl_price=kl_no_price,
+            pm_fee=pm_fee_per_contract,
+            kl_fee=kl_fee_per_contract,
             total_cost=total_cost,
             guaranteed_payout=guaranteed_payout,
             net_profit=net_profit,
@@ -111,17 +105,22 @@ class ArbitrageFinder:
         Calculate potential net cost for Maker + Taker mode.
 
         PM order is a limit/maker order at target_maker_price.
-        KL order is a market/taker order at ask price.
+        KL order is selling YES at bid (getting NO position).
         """
         pm_price = target_maker_price
-        kl_price = 1 - kl_quote.bid  # Cost to buy NO
+        kl_no_price = 1 - kl_quote.bid  # Cost to get NO position
 
-        # Maker fee on PM (currently 0)
-        pm_fee = PolymarketClient.calculate_maker_fee(quantity * pm_price)
-        # Taker fee on KL
-        kl_fee = KalshiClient.calculate_taker_fee(int(quantity), kl_price)
+        # Calculate total fees
+        pm_fee_total = PolymarketClient.calculate_maker_fee(quantity * pm_price)
+        # Kalshi fee when selling YES at bid price
+        kl_fee_total = KalshiClient.calculate_taker_fee(int(quantity), kl_quote.bid)
 
-        total_cost = pm_price + kl_price + pm_fee + kl_fee
+        # Convert fees to per-contract
+        pm_fee_per_contract = pm_fee_total / quantity if quantity > 0 else 0
+        kl_fee_per_contract = kl_fee_total / quantity if quantity > 0 else 0
+
+        # Total cost per contract
+        total_cost = pm_price + kl_no_price + pm_fee_per_contract + kl_fee_per_contract
         guaranteed_payout = 1.0
 
         net_profit = guaranteed_payout - total_cost
@@ -129,9 +128,9 @@ class ArbitrageFinder:
 
         return CostAnalysis(
             pm_price=pm_price,
-            kl_price=kl_price,
-            pm_fee=pm_fee,
-            kl_fee=kl_fee,
+            kl_price=kl_no_price,
+            pm_fee=pm_fee_per_contract,
+            kl_fee=kl_fee_per_contract,
             total_cost=total_cost,
             guaranteed_payout=guaranteed_payout,
             net_profit=net_profit,
@@ -144,26 +143,30 @@ class ArbitrageFinder:
         kl_quote: Quote,
     ) -> float:
         """
-        Calculate optimal maker price on PM to achieve minimum profit target.
+        Calculate optimal maker price on PM based on aggressiveness setting.
 
-        Given KL price is fixed, find PM price such that:
-        profit_rate >= min_profit_target
+        Aggressiveness controls where we place the order in the bid-ask spread:
+        - 0.0 = at bid (conservative, wait for others to cross)
+        - 0.5 = at midpoint (balanced)
+        - 0.7 = 70% toward ask (aggressive, default)
+        - 1.0 = at ask (most aggressive, nearly taking)
+
+        Also respects max price for minimum profit target.
         """
         kl_cost = 1 - kl_quote.bid
         kl_fee = KalshiClient.calculate_taker_fee(1, kl_cost)
 
-        # Target: (1 - pm_price - kl_cost - kl_fee) / (pm_price + kl_cost + kl_fee) >= min_profit
-        # Solve for pm_price:
-        # 1 - pm_price - kl_cost - kl_fee >= min_profit * (pm_price + kl_cost + kl_fee)
-        # 1 - kl_cost - kl_fee >= pm_price + min_profit * pm_price + min_profit * (kl_cost + kl_fee)
-        # 1 - kl_cost - kl_fee - min_profit * (kl_cost + kl_fee) >= pm_price * (1 + min_profit)
-        # pm_price <= (1 - (1 + min_profit) * (kl_cost + kl_fee)) / (1 + min_profit)
-
+        # Calculate max price we can pay while still hitting profit target
         min_profit = self.config.min_profit_target
         max_pm_price = (1 - (1 + min_profit) * (kl_cost + kl_fee)) / (1 + min_profit)
 
-        # Price should be at least slightly better than current bid to get filled
-        optimal_price = min(max_pm_price, pm_quote.bid + 0.001)
+        # Calculate aggressive price based on bid-ask spread
+        # aggressiveness: 0 = bid, 0.5 = mid, 1.0 = ask
+        aggressiveness = self.config.maker_aggressiveness
+        spread_price = pm_quote.bid + aggressiveness * (pm_quote.ask - pm_quote.bid)
+
+        # Use the more conservative of: aggressive price or max profitable price
+        optimal_price = min(max_pm_price, spread_price)
 
         # Ensure price is reasonable (between 0 and 1)
         return max(0.01, min(0.99, optimal_price))
@@ -228,6 +231,19 @@ class ArbitrageFinder:
         """
         if target_maker_price is None:
             target_maker_price = self.calculate_optimal_maker_price(pm_quote, kl_quote)
+
+        # Calculate raw spread: positive means there's profit at market prices
+        kl_no_cost = 1 - kl_quote.bid
+        raw_spread = 1 - (pm_quote.ask + kl_no_cost)
+
+        # Skip if spread is below threshold (negative spread = no real arbitrage)
+        if raw_spread < self.config.min_spread_threshold:
+            return None
+
+        # Skip if maker price is unrealistic (more than 2 cents below the bid)
+        # Orders placed too far below the bid will never fill
+        if target_maker_price < pm_quote.bid - 0.02:
+            return None
 
         # Calculate quantity
         avg_price = (target_maker_price + (1 - kl_quote.bid)) / 2

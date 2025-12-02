@@ -95,9 +95,61 @@ class TradeExecutor:
             )
 
             if not filled:
-                # Timeout - cancel and return
-                logger.warning(f"PM maker order timeout, cancelling")
-                await self.polymarket.cancel_order(pm_order.order_id)
+                # Timeout - check for partial fills before cancelling
+                logger.warning(f"PM maker order timeout, checking for partial fills")
+
+                # Get final order state before cancelling
+                orders = await self.polymarket.get_orders()
+                for o in orders:
+                    if o.get("id") == pm_order.order_id:
+                        size_matched = float(o.get("size_matched", 0) or 0)
+                        if size_matched > 0:
+                            pm_order.filled_quantity = size_matched
+                            pm_order.status = OrderStatus.PARTIALLY_FILLED
+                            logger.info(f"PM order partially filled: {size_matched} shares")
+                        break
+
+                # Cancel unfilled portion
+                try:
+                    await self.polymarket.cancel_order(pm_order.order_id)
+                except Exception as e:
+                    logger.warning(f"Cancel order failed (may already be filled): {e}")
+
+                # If we have partial fills, hedge them!
+                if pm_order.filled_quantity and pm_order.filled_quantity > 0:
+                    logger.info(f"Hedging partial fill of {pm_order.filled_quantity} shares on Kalshi")
+
+                    try:
+                        kl_order = await self.kalshi.create_order(
+                            ticker=opportunity.contract_pair.kalshi_ticker,
+                            side=Side.BUY,
+                            action="buy",
+                            count=int(pm_order.filled_quantity),
+                            price_cents=int(opportunity.kl_price * 100),
+                            order_type=OrderType.MARKET,
+                            client_order_id=client_order_id,
+                        )
+
+                        del self._active_orders[pm_order.order_id]
+                        del self._pending_hedges[pm_order.order_id]
+
+                        return TradeResult(
+                            success=True,
+                            pm_order=pm_order,
+                            kl_order=kl_order,
+                            net_profit=(1.0 - pm_order.average_fill_price - opportunity.kl_price) * pm_order.filled_quantity if pm_order.average_fill_price else 0,
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to hedge partial fill: {e}")
+                        # Panic sell the PM position
+                        await self._panic_sell(pm_order)
+                        return TradeResult(
+                            success=False,
+                            pm_order=pm_order,
+                            error_message=f"Partial fill hedge failed: {e}",
+                            requires_panic_sell=True,
+                        )
+
                 del self._active_orders[pm_order.order_id]
                 del self._pending_hedges[pm_order.order_id]
 
@@ -355,10 +407,19 @@ class TradeExecutor:
                 for o in orders:
                     if o.get("id") == order.order_id:
                         status = o.get("status", "").lower()
-                        if status == "matched":
+                        size_matched = float(o.get("size_matched", 0) or 0)
+                        original_size = float(o.get("original_size", order.quantity) or order.quantity)
+
+                        if status == "matched" or size_matched >= original_size * 0.99:
+                            # Fully filled
                             order.status = OrderStatus.FILLED
-                            order.filled_quantity = order.quantity
+                            order.filled_quantity = size_matched if size_matched > 0 else order.quantity
                             return True
+                        elif size_matched > 0:
+                            # Partially filled - update filled quantity and continue waiting
+                            order.filled_quantity = size_matched
+                            order.status = OrderStatus.PARTIALLY_FILLED
+                            logger.debug(f"PM order partially filled: {size_matched}/{original_size}")
                         elif status == "cancelled":
                             order.status = OrderStatus.CANCELLED
                             return False

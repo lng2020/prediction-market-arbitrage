@@ -155,8 +155,11 @@ class KalshiClient:
 
         url = f"{self.config.base_url}{path}"
 
+        # Signature must use full path from root (e.g., /trade-api/v2/portfolio/orders)
+        full_path = f"/trade-api/v2{path}"
+
         if auth_required and self._private_key:
-            headers = self._get_auth_headers(method, path)
+            headers = self._get_auth_headers(method, full_path)
         else:
             headers = {"Content-Type": "application/json"}
 

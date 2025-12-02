@@ -89,6 +89,19 @@ class DataCollector:
         """Handle incoming quote update."""
         key = self._cache_key(quote.platform, quote.contract_id)
         old_quote = self._quotes.get(key)
+
+        # Preserve sizes from cached quote if new quote has size=0
+        # (WebSocket price_changes messages don't include size)
+        if old_quote and quote.bid_size == 0 and quote.ask_size == 0:
+            quote = Quote(
+                platform=quote.platform,
+                contract_id=quote.contract_id,
+                bid=quote.bid,
+                ask=quote.ask,
+                bid_size=old_quote.bid_size,
+                ask_size=old_quote.ask_size,
+            )
+
         self._quotes[key] = quote
 
         # Log quote update in verbose mode (only if price changed)

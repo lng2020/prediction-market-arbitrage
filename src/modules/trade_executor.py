@@ -50,6 +50,37 @@ class TradeExecutor:
         self._active_orders: dict[str, Order] = {}
         self._pending_hedges: dict[str, ArbitrageOpportunity] = {}
 
+        # Cached Kalshi balance (updated on each trade)
+        self._kalshi_balance_cents: int = 0
+
+    async def check_kalshi_balance(self, required_cents: int) -> bool:
+        """
+        Check if Kalshi has sufficient balance for a trade.
+
+        Args:
+            required_cents: Required balance in cents
+
+        Returns:
+            True if sufficient balance, False otherwise
+        """
+        try:
+            balance_data = await self.kalshi.get_balance()
+            # Kalshi returns balance in cents
+            available = balance_data.get("balance", 0)
+            self._kalshi_balance_cents = available
+
+            if available < required_cents:
+                logger.warning(
+                    f"Insufficient Kalshi balance: ${available/100:.2f} < ${required_cents/100:.2f} required"
+                )
+                return False
+
+            logger.debug(f"Kalshi balance OK: ${available/100:.2f} >= ${required_cents/100:.2f}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to check Kalshi balance: {e}")
+            return False
+
     async def execute_m2t(
         self,
         opportunity: ArbitrageOpportunity,
@@ -70,6 +101,16 @@ class TradeExecutor:
             f"Executing M2T for {opportunity.contract_pair.event_name} "
             f"qty={opportunity.suggested_quantity:.2f}"
         )
+
+        # Check Kalshi balance before trading
+        # Required: quantity * kl_price (in cents)
+        required_cents = int(opportunity.suggested_quantity * opportunity.kl_price * 100)
+        has_balance = await self.check_kalshi_balance(required_cents)
+        if not has_balance:
+            return TradeResult(
+                success=False,
+                error_message=f"Insufficient Kalshi balance for trade (need ${required_cents/100:.2f})",
+            )
 
         pm_order = None
         kl_order = None
@@ -120,12 +161,13 @@ class TradeExecutor:
                     logger.info(f"Hedging partial fill of {pm_order.filled_quantity} shares on Kalshi")
 
                     try:
+                        # Buy NO on Kalshi to hedge against PM YES position
                         kl_order = await self.kalshi.create_order(
                             ticker=opportunity.contract_pair.kalshi_ticker,
-                            side=Side.BUY,
-                            action="buy",
+                            side=Side.SELL,  # Maps to "no"
+                            action="buy",    # BUY NO contracts
                             count=int(pm_order.filled_quantity),
-                            price_cents=int(opportunity.kl_price * 100),
+                            price_cents=int(opportunity.kl_price * 100),  # NO price
                             order_type=OrderType.MARKET,
                             client_order_id=client_order_id,
                         )
@@ -165,12 +207,13 @@ class TradeExecutor:
             # Calculate the dollar amount for Kalshi based on filled quantity
             kl_amount = pm_order.filled_quantity * opportunity.kl_price
 
+            # Buy NO on Kalshi to hedge against PM YES position
             kl_order = await self.kalshi.create_order(
                 ticker=opportunity.contract_pair.kalshi_ticker,
-                side=Side.BUY,
-                action="buy",
+                side=Side.SELL,  # Maps to "no"
+                action="buy",    # BUY NO contracts
                 count=int(pm_order.filled_quantity),
-                price_cents=int(opportunity.kl_price * 100),
+                price_cents=int(opportunity.kl_price * 100),  # NO price
                 order_type=OrderType.MARKET,
                 client_order_id=client_order_id,
             )
@@ -257,6 +300,16 @@ class TradeExecutor:
             f"qty={opportunity.suggested_quantity:.2f}"
         )
 
+        # Check Kalshi balance before trading
+        # Required: quantity * kl_price (in cents)
+        required_cents = int(opportunity.suggested_quantity * opportunity.kl_price * 100)
+        has_balance = await self.check_kalshi_balance(required_cents)
+        if not has_balance:
+            return TradeResult(
+                success=False,
+                error_message=f"Insufficient Kalshi balance for trade (need ${required_cents/100:.2f})",
+            )
+
         pm_order = None
         kl_order = None
 
@@ -268,12 +321,13 @@ class TradeExecutor:
                 amount=opportunity.suggested_quantity * opportunity.pm_price,
             )
 
+            # Buy NO on Kalshi to hedge against PM YES position
             kl_task = self.kalshi.create_order(
                 ticker=opportunity.contract_pair.kalshi_ticker,
-                side=Side.BUY,
-                action="buy",
+                side=Side.SELL,  # Maps to "no"
+                action="buy",    # BUY NO contracts
                 count=int(opportunity.suggested_quantity),
-                price_cents=int(opportunity.kl_price * 100),
+                price_cents=int(opportunity.kl_price * 100),  # NO price
                 order_type=OrderType.MARKET,
                 client_order_id=client_order_id,
             )
@@ -404,8 +458,10 @@ class TradeExecutor:
             # Check order status
             if order.platform == Platform.POLYMARKET:
                 orders = await self.polymarket.get_orders()
+                order_found = False
                 for o in orders:
                     if o.get("id") == order.order_id:
+                        order_found = True
                         status = o.get("status", "").lower()
                         size_matched = float(o.get("size_matched", 0) or 0)
                         original_size = float(o.get("original_size", order.quantity) or order.quantity)
@@ -423,6 +479,14 @@ class TradeExecutor:
                         elif status == "cancelled":
                             order.status = OrderStatus.CANCELLED
                             return False
+                        break
+
+                # If order not found in open orders, it was likely fully filled
+                if not order_found:
+                    logger.info(f"PM order {order.order_id} not in open orders - assuming filled")
+                    order.status = OrderStatus.FILLED
+                    order.filled_quantity = order.quantity
+                    return True
             else:
                 order_data = await self.kalshi.get_order(order.order_id)
                 status = order_data.get("status", "")

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import logging
 import time
 from collections import deque
 from datetime import datetime
@@ -15,6 +16,8 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from ..config import KalshiConfig
 from ..models import Order, OrderStatus, OrderType, Platform, Quote, Side
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
@@ -166,7 +169,11 @@ class KalshiClient:
         async with self._session.request(
             method, url, headers=headers, params=params, json=data
         ) as response:
-            response.raise_for_status()
+            if response.status >= 400:
+                error_body = await response.text()
+                logger.error(f"Kalshi API error {response.status}: {error_body}")
+                logger.error(f"Request was: {method} {path} data={data}")
+                response.raise_for_status()
             return await response.json()
 
     # Market Data Endpoints
@@ -254,8 +261,12 @@ class KalshiClient:
             "type": order_type.value,
         }
 
-        if order_type == OrderType.LIMIT:
+        # Kalshi requires a price for all orders (including market)
+        # Use yes_price for YES side, no_price for NO side
+        if side == Side.BUY:  # YES side
             data["yes_price"] = price_cents
+        else:  # NO side
+            data["no_price"] = price_cents
 
         if client_order_id:
             data["client_order_id"] = client_order_id

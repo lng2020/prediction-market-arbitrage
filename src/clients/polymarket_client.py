@@ -259,14 +259,30 @@ class PolymarketClient:
 
     # Order Methods
 
+    def _can_use_fast_signing(self, token_id: str) -> bool:
+        """Check if fast signing can be used (all required params are cached)."""
+        return (
+            token_id in self._client._tick_sizes
+            and token_id in self._client._neg_risk
+        )
+
+    async def prefetch_market_params(self, token_id: str) -> None:
+        """Prefetch tick_size, neg_risk, fee_rate for fast signing."""
+        await self._client.prefetch_order_fields(token_id)
+
     async def create_limit_order(
         self,
         token_id: str,
         side: Side,
         price: float,
         size: float,
+        use_fast_signing: bool = True,
     ) -> Order:
-        """Create a limit order (Maker)."""
+        """Create a limit order (Maker).
+
+        Args:
+            use_fast_signing: If True and tick_size/neg_risk are cached, use fast signing path.
+        """
         order_args = OrderArgs(
             token_id=token_id,
             price=price,
@@ -274,7 +290,16 @@ class PolymarketClient:
             side="BUY" if side == Side.BUY else "SELL",
         )
 
-        signed_order = await self._client.create_order(order_args)
+        # Use fast signing if parameters are cached
+        if use_fast_signing and self._can_use_fast_signing(token_id):
+            tick_size = self._client._tick_sizes[token_id]
+            neg_risk = self._client._neg_risk[token_id]
+            fee_rate = self._client._fee_rates.get(token_id, 0)
+            order_args.fee_rate_bps = fee_rate
+            signed_order = self._client.create_order_fast(order_args, tick_size, neg_risk)
+        else:
+            signed_order = await self._client.create_order(order_args)
+
         response = await self._client.post_order(signed_order, PMOrderType.GTC)
 
         return Order(

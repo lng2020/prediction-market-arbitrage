@@ -46,9 +46,15 @@ from py_clob_client.endpoints import (
 from py_clob_client.exceptions import PolyApiException, PolyException
 from py_clob_client.headers.headers import create_level_1_headers, create_level_2_headers
 from py_clob_client.http_helpers.helpers import add_query_open_orders_params, add_query_trade_params
-from py_clob_client.order_builder.builder import OrderBuilder
+from py_clob_client.order_builder.builder import OrderBuilder, ROUNDING_CONFIG
+from py_clob_client.order_builder.helpers import to_token_decimals, round_down, round_normal, decimal_places, round_up
 from py_clob_client.signer import Signer
 from py_clob_client.utilities import is_tick_size_smaller, order_to_json, parse_raw_orderbook_summary, price_valid
+
+# Fast signing imports
+from py_order_utils.builders import OrderBuilder as UtilsOrderBuilder
+from py_order_utils.signer import Signer as UtilsSigner
+from py_order_utils.model import OrderData, SignedOrder, BUY as UtilsBuy, SELL as UtilsSell, EOA
 
 
 class AsyncPolyClient:
@@ -71,6 +77,12 @@ class AsyncPolyClient:
 
         if self.signer:
             self.builder = OrderBuilder(self.signer, sig_type=signature_type, funder=funder)
+            # Pre-initialize fast signing components (cached for reuse)
+            self._utils_signer = UtilsSigner(key=key)
+            self._funder = funder if funder is not None else self.signer.address()
+            self._sig_type = signature_type if signature_type is not None else EOA
+            # Cache UtilsOrderBuilder per (neg_risk) - created lazily
+            self._utils_builders: dict[bool, UtilsOrderBuilder] = {}
 
         # Local cache
         self._tick_sizes: dict[str, TickSize] = {}
@@ -331,6 +343,76 @@ class AsyncPolyClient:
             order_args,
             CreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
         )
+
+    def _get_utils_builder(self, neg_risk: bool) -> UtilsOrderBuilder:
+        """Get or create cached UtilsOrderBuilder for fast signing."""
+        if neg_risk not in self._utils_builders:
+            contract_config = get_contract_config(self.chain_id, neg_risk)
+            self._utils_builders[neg_risk] = UtilsOrderBuilder(
+                contract_config.exchange,
+                self.chain_id,
+                self._utils_signer,
+            )
+        return self._utils_builders[neg_risk]
+
+    def create_order_fast(
+        self,
+        order_args: OrderArgs,
+        tick_size: TickSize,
+        neg_risk: bool,
+    ) -> SignedOrder:
+        """
+        Fast order signing using cached builder components.
+
+        ~10ms vs ~50ms+ for standard create_order.
+        Requires tick_size and neg_risk to be known upfront (skip HTTP lookups).
+        """
+        self.assert_level_1_auth()
+
+        round_config = ROUNDING_CONFIG[tick_size]
+        side = order_args.side
+        price = order_args.price
+        size = order_args.size
+
+        # Calculate amounts (same logic as OrderBuilder.get_order_amounts)
+        raw_price = round_normal(price, round_config.price)
+
+        if side == "BUY":
+            raw_taker_amt = round_down(size, round_config.size)
+            raw_maker_amt = raw_taker_amt * raw_price
+            if decimal_places(raw_maker_amt) > round_config.amount:
+                raw_maker_amt = round_up(raw_maker_amt, round_config.amount + 4)
+                if decimal_places(raw_maker_amt) > round_config.amount:
+                    raw_maker_amt = round_down(raw_maker_amt, round_config.amount)
+            utils_side = UtilsBuy
+        else:  # SELL
+            raw_maker_amt = round_down(size, round_config.size)
+            raw_taker_amt = raw_maker_amt * raw_price
+            if decimal_places(raw_taker_amt) > round_config.amount:
+                raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4)
+                if decimal_places(raw_taker_amt) > round_config.amount:
+                    raw_taker_amt = round_down(raw_taker_amt, round_config.amount)
+            utils_side = UtilsSell
+
+        maker_amount = to_token_decimals(raw_maker_amt)
+        taker_amount = to_token_decimals(raw_taker_amt)
+
+        data = OrderData(
+            maker=self._funder,
+            taker=order_args.taker,
+            tokenId=order_args.token_id,
+            makerAmount=str(maker_amount),
+            takerAmount=str(taker_amount),
+            side=utils_side,
+            feeRateBps=str(order_args.fee_rate_bps),
+            nonce=str(order_args.nonce),
+            signer=self.signer.address(),
+            expiration=str(order_args.expiration),
+            signatureType=self._sig_type,
+        )
+
+        utils_builder = self._get_utils_builder(neg_risk)
+        return utils_builder.build_signed_order(data)
 
     async def create_market_order(
         self,

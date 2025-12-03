@@ -14,6 +14,7 @@ from ..clients import KalshiClient, PolymarketClient
 from ..config import TradingConfig
 from ..models import (
     ArbitrageOpportunity,
+    ExitOpportunity,
     Order,
     OrderStatus,
     OrderType,
@@ -568,3 +569,163 @@ class TradeExecutor:
     def get_active_orders(self) -> list[Order]:
         """Get list of active orders."""
         return list(self._active_orders.values())
+
+    async def execute_exit(self, exit_opp: ExitOpportunity) -> TradeResult:
+        """
+        Execute an exit opportunity - sell both PM YES and KL NO positions.
+
+        Flow (CONCURRENT with panic sell on partial failure):
+        1. Execute both sells concurrently for speed
+        2. If one fails and other succeeds, panic sell the remaining position
+        3. This ensures we never leave an unhedged position
+
+        Args:
+            exit_opp: The exit opportunity to execute
+
+        Returns:
+            TradeResult indicating success/failure
+        """
+        position = exit_opp.position
+        logger.info(
+            f"Executing exit for {position.contract_pair.event_name}: "
+            f"qty={position.quantity:.2f} expected_profit=${exit_opp.profit:.2f}"
+        )
+
+        pm_order = None
+        kl_order = None
+
+        try:
+            # Execute both sells concurrently
+            logger.info(f"Selling PM YES ({position.pm_quantity} shares) and KL NO ({position.kl_quantity} contracts) concurrently")
+
+            pm_task = self.polymarket.create_market_order(
+                token_id=position.pm_token_id,
+                side=Side.SELL,
+                amount=position.pm_quantity,
+            )
+
+            kl_task = self.kalshi.create_order(
+                ticker=position.kl_ticker,
+                side=Side.SELL,  # Maps to "no"
+                action="sell",   # SELL NO contracts to close
+                count=int(position.kl_quantity),
+                price_cents=1,   # Market sell - accept any price
+                order_type=OrderType.MARKET,
+            )
+
+            results = await asyncio.gather(pm_task, kl_task, return_exceptions=True)
+            pm_result, kl_result = results
+
+            # Handle PM result
+            pm_error = None
+            if isinstance(pm_result, Exception):
+                logger.error(f"PM exit sell failed: {pm_result}")
+                pm_error = str(pm_result)
+            else:
+                pm_order = pm_result
+                logger.info(f"PM exit sell executed: {pm_order.order_id}")
+
+            # Handle KL result
+            kl_error = None
+            if isinstance(kl_result, Exception):
+                logger.error(f"KL exit sell failed: {kl_result}")
+                kl_error = str(kl_result)
+            else:
+                kl_order = kl_result
+                logger.info(f"KL exit sell executed: {kl_order.order_id}")
+
+            # Check fill status
+            pm_filled = pm_order and pm_order.status in [
+                OrderStatus.FILLED,
+                OrderStatus.OPEN,
+                OrderStatus.PARTIALLY_FILLED,
+            ]
+            kl_filled = kl_order and kl_order.status in [
+                OrderStatus.FILLED,
+                OrderStatus.OPEN,
+                OrderStatus.PARTIALLY_FILLED,
+            ]
+
+            # Both succeeded - great!
+            if pm_filled and kl_filled:
+                net_profit = exit_opp.profit
+                logger.info(
+                    f"Exit completed successfully! "
+                    f"Net profit: ${net_profit:.2f} ({exit_opp.profit_rate*100:.2f}%)"
+                )
+                return TradeResult(
+                    success=True,
+                    pm_order=pm_order,
+                    kl_order=kl_order,
+                    net_profit=net_profit,
+                )
+
+            # PM succeeded but KL failed - panic sell KL to close position
+            if pm_filled and not kl_filled:
+                logger.warning("PM sold but KL failed - attempting panic sell on KL")
+                try:
+                    await self._panic_sell_kalshi_no(position.kl_ticker, int(position.kl_quantity))
+                    logger.info("KL panic sell completed")
+                except Exception as e:
+                    logger.error(f"KL panic sell also failed: {e}")
+
+                return TradeResult(
+                    success=False,
+                    pm_order=pm_order,
+                    kl_order=kl_order,
+                    error_message=f"Exit partial: PM sold, KL failed ({kl_error}), panic sell attempted",
+                )
+
+            # KL succeeded but PM failed - panic sell PM to close position
+            if kl_filled and not pm_filled:
+                logger.warning("KL sold but PM failed - attempting panic sell on PM")
+                try:
+                    await self._panic_sell(Order(
+                        platform=Platform.POLYMARKET,
+                        contract_id=position.pm_token_id,
+                        side=Side.BUY,
+                        order_type=OrderType.MARKET,
+                        price=0,
+                        quantity=position.pm_quantity,
+                        filled_quantity=position.pm_quantity,
+                    ))
+                    logger.info("PM panic sell completed")
+                except Exception as e:
+                    logger.error(f"PM panic sell also failed: {e}")
+
+                return TradeResult(
+                    success=False,
+                    pm_order=pm_order,
+                    kl_order=kl_order,
+                    error_message=f"Exit partial: KL sold, PM failed ({pm_error}), panic sell attempted",
+                )
+
+            # Both failed - position stays intact
+            return TradeResult(
+                success=False,
+                pm_order=pm_order,
+                kl_order=kl_order,
+                error_message=f"Both exit orders failed: PM={pm_error}, KL={kl_error}",
+            )
+
+        except Exception as e:
+            logger.error(f"Exit execution error: {e}")
+            return TradeResult(
+                success=False,
+                pm_order=pm_order,
+                kl_order=kl_order,
+                error_message=str(e),
+            )
+
+    async def _panic_sell_kalshi_no(self, ticker: str, count: int) -> None:
+        """Emergency sell KL NO position at any price."""
+        logger.warning(f"PANIC SELL KL NO: {ticker} x{count}")
+        await self.kalshi.create_order(
+            ticker=ticker,
+            side=Side.SELL,
+            action="sell",
+            count=count,
+            price_cents=1,  # Accept any price
+            order_type=OrderType.MARKET,
+            urgent=True,
+        )

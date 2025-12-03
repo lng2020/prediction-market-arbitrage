@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional
 
 import aiohttp
 import websockets
-from py_clob_client.client import ClobClient
+from common.custom_poly_client import CustomClient
 from py_clob_client.clob_types import MarketOrderArgs, OpenOrderParams, OrderArgs, OrderType as PMOrderType
 
 from ..config import PolymarketConfig
@@ -22,7 +22,7 @@ class PolymarketClient:
 
     def __init__(self, config: PolymarketConfig):
         self.config = config
-        self._client: Optional[ClobClient] = None
+        self._client: Optional[CustomClient] = None
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._api_creds: Optional[dict] = None
         self._quote_callbacks: list[Callable[[Quote], None]] = []
@@ -35,7 +35,7 @@ class PolymarketClient:
 
     def _init_client(self) -> None:
         """Synchronous client initialization."""
-        self._client = ClobClient(
+        self._client = CustomClient(
             host=self.config.base_url,
             key=self.config.private_key,
             chain_id=self.config.chain_id,

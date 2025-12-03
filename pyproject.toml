@@ -2,7 +2,7 @@
 name = "poly-arbitrage"
 version = "0.1.0"
 description = "Cross-platform arbitrage bot for Kalshi and Polymarket"
-requires-python = ">=3.9"
+requires-python = ">=3.9.10"
 dependencies = [
     "py-clob-client>=0.1.0",
     "kalshi-python>=2.1.0",

@@ -1,13 +1,12 @@
 """Polymarket API client with REST and WebSocket support."""
 
-import asyncio
 import json
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import aiohttp
 import websockets
-from common.custom_poly_client import CustomClient
+from common.async_poly_client import AsyncPolyClient
 from py_clob_client.clob_types import MarketOrderArgs, OpenOrderParams, OrderArgs, OrderType as PMOrderType
 
 from ..config import PolymarketConfig
@@ -22,20 +21,14 @@ class PolymarketClient:
 
     def __init__(self, config: PolymarketConfig):
         self.config = config
-        self._client: Optional[CustomClient] = None
+        self._client: Optional[AsyncPolyClient] = None
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._api_creds: Optional[dict] = None
         self._quote_callbacks: list[Callable[[Quote], None]] = []
 
     async def initialize(self) -> None:
         """Initialize the client and authenticate."""
-        # py-clob-client is synchronous, wrap in executor for async compatibility
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._init_client)
-
-    def _init_client(self) -> None:
-        """Synchronous client initialization."""
-        self._client = CustomClient(
+        self._client = AsyncPolyClient(
             host=self.config.base_url,
             key=self.config.private_key,
             chain_id=self.config.chain_id,
@@ -43,11 +36,13 @@ class PolymarketClient:
             funder=self.config.funder_address,
         )
         # Derive API credentials for authenticated endpoints
-        self._api_creds = self._client.create_or_derive_api_creds()
+        self._api_creds = await self._client.create_or_derive_api_creds()
         self._client.set_api_creds(self._api_creds)
 
     async def close(self) -> None:
         """Close all connections."""
+        if self._client:
+            await self._client.close()
         if self._ws:
             await self._ws.close()
 
@@ -215,34 +210,25 @@ class PolymarketClient:
 
     async def get_market(self, condition_id: str) -> dict:
         """Get single market details."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._client.get_market, condition_id)
+        return await self._client.get_market(condition_id)
 
     async def get_orderbook(self, token_id: str) -> dict:
         """Get orderbook for a token."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._client.get_order_book, token_id)
+        return await self._client.get_order_book(token_id)
 
     async def get_midpoint(self, token_id: str) -> float:
         """Get midpoint price for a token."""
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self._client.get_midpoint, token_id)
-        return float(result) if result else 0.0
+        result = await self._client.get_midpoint(token_id)
+        return float(result.get("mid", 0)) if result else 0.0
 
     async def get_price(self, token_id: str, side: str = "BUY") -> float:
         """Get best price for a token and side."""
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, lambda: self._client.get_price(token_id, side)
-        )
-        return float(result) if result else 0.0
+        result = await self._client.get_price(token_id, side)
+        return float(result.get("price", 0)) if result else 0.0
 
     async def get_quote(self, token_id: str) -> Quote:
         """Get current quote for a token."""
-        loop = asyncio.get_event_loop()
-        orderbook = await loop.run_in_executor(
-            None, self._client.get_order_book, token_id
-        )
+        orderbook = await self._client.get_order_book(token_id)
 
         # py-clob-client returns OrderBookSummary object, handle both dict and object
         if hasattr(orderbook, "bids"):
@@ -281,8 +267,6 @@ class PolymarketClient:
         size: float,
     ) -> Order:
         """Create a limit order (Maker)."""
-        loop = asyncio.get_event_loop()
-
         order_args = OrderArgs(
             token_id=token_id,
             price=price,
@@ -290,13 +274,8 @@ class PolymarketClient:
             side="BUY" if side == Side.BUY else "SELL",
         )
 
-        signed_order = await loop.run_in_executor(
-            None, self._client.create_order, order_args
-        )
-
-        response = await loop.run_in_executor(
-            None, lambda: self._client.post_order(signed_order, PMOrderType.GTC)
-        )
+        signed_order = await self._client.create_order(order_args)
+        response = await self._client.post_order(signed_order, PMOrderType.GTC)
 
         return Order(
             platform=Platform.POLYMARKET,
@@ -316,21 +295,14 @@ class PolymarketClient:
         amount: float,  # Dollar amount
     ) -> Order:
         """Create a market order (Taker) with FOK."""
-        loop = asyncio.get_event_loop()
-
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=amount,
             side="BUY" if side == Side.BUY else "SELL",
         )
 
-        signed_order = await loop.run_in_executor(
-            None, self._client.create_market_order, order_args
-        )
-
-        response = await loop.run_in_executor(
-            None, lambda: self._client.post_order(signed_order, PMOrderType.FOK)
-        )
+        signed_order = await self._client.create_market_order(order_args)
+        response = await self._client.post_order(signed_order, PMOrderType.FOK)
 
         return Order(
             platform=Platform.POLYMARKET,
@@ -345,32 +317,28 @@ class PolymarketClient:
 
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an order."""
-        loop = asyncio.get_event_loop()
         try:
-            await loop.run_in_executor(None, self._client.cancel, order_id)
+            await self._client.cancel(order_id)
             return True
         except Exception:
             return False
 
     async def cancel_all_orders(self) -> bool:
         """Cancel all open orders."""
-        loop = asyncio.get_event_loop()
         try:
-            await loop.run_in_executor(None, self._client.cancel_all)
+            await self._client.cancel_all()
             return True
         except Exception:
             return False
 
     async def get_orders(self) -> list[dict]:
         """Get all open orders."""
-        loop = asyncio.get_event_loop()
         params = OpenOrderParams()
-        return await loop.run_in_executor(None, self._client.get_orders, params)
+        return await self._client.get_orders(params)
 
     async def get_trades(self) -> list[dict]:
         """Get trade history."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._client.get_trades)
+        return await self._client.get_trades()
 
     def _map_order_status(self, status: str) -> OrderStatus:
         """Map Polymarket order status to internal status."""
